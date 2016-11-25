@@ -98,7 +98,7 @@ int allocate_device_data(struct platform_device *pdev)
 
 int get_ipi_number(struct device *dev, struct user_sgi_data* data)
 {
-	return of_property_read_u32(dev->of_node, "ipi_number", &data->ipi_number);
+	return of_property_read_u32(dev->of_node, IPI_NUMBER_NAME, &data->ipi_number);
 }
 
 int release_after_ipi(struct platform_device *pdev, int result)
