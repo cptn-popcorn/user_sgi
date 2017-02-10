@@ -44,14 +44,21 @@
 #include <linux/smp.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/atomic.h>
 #include <asm/barrier.h>
 #include <asm/page.h>
 
 #define DRIVER_NAME "user_sgi"
 #define IPI_NUMBER_NAME "ipi_number"
 
+typedef struct
+{
+	atomic_t is_pending;
+} notify_state;
+
 static struct device *ipi_dev = NULL;
 static u32 ipi_count = 0;
+static notify_state state = {};
 
 struct user_sgi_data
 {
@@ -65,11 +72,12 @@ static ssize_t count_show(struct device *dev, struct device_attribute *attr, cha
 
 static DEVICE_ATTR_RO(count);
 
-static void handle_ipi(void)
+void notify_count(struct work_struct *work)
 {
 	struct device *dev;
-	
-	smp_store_release(&ipi_count, ipi_count + 1);
+
+	atomic_set_release(&state.is_pending, 0);
+
 	dev = smp_load_acquire(&ipi_dev);
 	
 	if(dev == NULL)
@@ -78,6 +86,20 @@ static void handle_ipi(void)
 	}
 	
 	sysfs_notify(&dev->kobj, NULL, dev_attr_count.attr.name);
+}
+
+DECLARE_WORK(notify, notify_count);
+
+static void handle_ipi(void)
+{
+	smp_store_release(&ipi_count, ipi_count + 1);
+
+	if(atomic_cmpxchg_acquire(&state.is_pending, 0, 1) != 0)
+	{
+		return;
+	}
+
+	schedule_work(&notify);
 }
 
 int allocate_device_data(struct platform_device *pdev)
@@ -105,6 +127,8 @@ int release_after_ipi(struct platform_device *pdev, int result)
 {
 	smp_store_release(&ipi_dev, NULL);
 	clear_ipi_handler(((struct user_sgi_data*)platform_get_drvdata(pdev))->ipi_number);
+	flush_scheduled_work();
+
 	return result;
 }
 
@@ -140,6 +164,7 @@ static int user_sgi_probe(struct platform_device *pdev)
 	}
 
 	smp_store_release(&ipi_dev, &pdev->dev);
+	atomic_set_release(&state.is_pending, 0);
 	
 	if(set_ipi_handler(data->ipi_number, handle_ipi, "user sgi") != 0)
 	{
